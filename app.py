@@ -1,136 +1,93 @@
+# Formula Optimizer Mixture Laboratory V1
+# Streamlit prototype
 import streamlit as st
 import pandas as pd
 import numpy as np
-import random, json
+import random
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, ConstantKernel
-from math import sqrt
 
-st.set_page_config(layout='wide', page_title='Formula Optimizer Lab Edition')
-st.title('Formula Optimizer - Laboratory Edition')
+st.set_page_config(layout="wide")
+st.title("Formula Optimizer - Mixture Laboratory V1")
 
-if 'trials' not in st.session_state:
+if "trials" not in st.session_state:
     st.session_state.trials=[]
 
-nvar = st.sidebar.number_input('Numero variabili',2,20,6)
-ndoe = st.sidebar.number_input('Numero prove iniziali',3,30,8)
-nsuggest = st.sidebar.number_input('Nuove prove suggerite',1,10,3)
+nvar=st.sidebar.number_input("Numero variabili",2,15,5)
+ndoe=st.sidebar.number_input("DOE iniziali",3,30,8)
+nsuggest=st.sidebar.number_input("Prove suggerite",1,10,3)
 
-st.subheader('Definizione variabili')
 vars=[]
+st.subheader("Variabili (somma obbligatoria = 100%)")
 for i in range(nvar):
     c1,c2,c3,c4,c5,c6=st.columns(6)
     vars.append({
-        'name': c1.text_input(f'n{i}',f'RM{i+1}'),
-        'base': c2.number_input(f'base{i}',value=10.0,key=f'b{i}'),
-        'min': c3.number_input(f'min{i}',value=5.0,key=f'mn{i}'),
-        'max': c4.number_input(f'max{i}',value=20.0,key=f'mx{i}'),
-        'step': c5.number_input(f'step{i}',value=0.5,min_value=0.001,key=f's{i}'),
-        'locked': c6.checkbox('Lock',key=f'l{i}')
+        'name':c1.text_input(f'n{i}',f'RM{i+1}'),
+        'base':c2.number_input(f'base{i}',value=20.0,key=f'b{i}'),
+        'min':c3.number_input(f'min{i}',value=0.0,key=f'mn{i}'),
+        'max':c4.number_input(f'max{i}',value=100.0,key=f'mx{i}'),
+        'step':c5.number_input(f'step{i}',value=0.5,key=f's{i}'),
+        'lock':c6.checkbox('Lock',key=f'l{i}')
     })
 
-def lhs(n,p):
-    cols=[]
-    for _ in range(p):
-        x=[(i+random.random())/n for i in range(n)]
-        random.shuffle(x)
-        cols.append(x)
-    return list(zip(*cols))
+def norm100(v):
+    s=sum(v)
+    return [round(x*100/s,2) for x in v]
 
-if st.button('Genera DOE iniziale'):
+if st.button('Genera DOE Mixture'):
     rows=[]
-    for idx,row in enumerate(lhs(ndoe,nvar),1):
-        rec={'ID':idx,'Iterazione':0}
-        for j,v in enumerate(vars):
-            span=(v['max']-v['min'])*0.35
-            center=v['base']
-            val=center-span + row[j]*(2*span)
-            val=max(v['min'],min(v['max'],val))
-            val=round(round(val/v['step'])*v['step'],4)
-            rec[v['name']]=val
-        rec['Score']=np.nan
-        rows.append(rec)
+    for k in range(ndoe):
+        vals=[]
+        for v in vars:
+            span=(v['max']-v['min'])*0.10
+            vals.append(max(v['min'],min(v['max'],v['base']+random.uniform(-span,span))))
+        vals=norm100(vals)
+        r={'ID':k+1,'Iterazione':0}
+        for i,v in enumerate(vars):
+            r[v['name']]=vals[i]
+        r['Totale']=round(sum(vals),2)
+        r['Score']=np.nan
+        rows.append(r)
     st.session_state.trials=rows
 
 if st.session_state.trials:
     df=pd.DataFrame(st.session_state.trials)
-    edited=st.data_editor(df,use_container_width=True)
-    st.session_state.trials=edited.to_dict('records')
+    df=st.data_editor(df,use_container_width=True)
+    st.session_state.trials=df.to_dict('records')
 
-    scored=edited.dropna(subset=['Score'])
-
+    scored=df.dropna(subset=['Score'])
     if len(scored)>0:
         best=scored.sort_values('Score',ascending=False).iloc[0]
-        st.subheader('Miglior formulazione corrente')
-        st.write(f"Score migliore: {best['Score']}")
+        st.success(f'Miglior score: {best["Score"]}')
 
     if len(scored)>=5:
         names=[v['name'] for v in vars]
-        X=scored[names].values.astype(float)
+        X=scored[names].values
         y=scored['Score'].astype(float).values
 
-        gp=GaussianProcessRegressor(
-            kernel=ConstantKernel(1.0)*RBF(length_scale=np.ones(len(names))),
-            normalize_y=True,
-            alpha=1e-5,
-            random_state=1)
+        gp=GaussianProcessRegressor(kernel=ConstantKernel(1.0)*RBF(),normalize_y=True)
         gp.fit(X,y)
 
-        st.subheader('Importanza variabili (proxy)')
-        center=np.mean(X,axis=0)
-        imp=[]
-        for i,n in enumerate(names):
-            p1=center.copy(); p2=center.copy()
-            p1[i]+=0.5; p2[i]-=0.5
-            delta=abs(float(gp.predict([p1])[0]-gp.predict([p2])[0]))
-            imp.append([n,delta])
-        st.dataframe(pd.DataFrame(imp,columns=['Variabile','Indice']).sort_values('Indice',ascending=False),use_container_width=True)
-
-        st.line_chart(scored[['Score']])
-
         if st.button('Genera nuove prove'):
-            existing=[list(r) for r in X.tolist()]
-            cand=[]
             besty=max(y)
-            current_iter=int(max(edited['Iterazione']))+1
-
-            for _ in range(8000):
-                row=[]
-                for idx,v in enumerate(vars):
-                    if v['locked']:
-                        row.append(float(best[v['name']]))
+            cand=[]
+            for _ in range(5000):
+                vals=[]
+                for v in vars:
+                    if v['lock']:
+                        vals.append(float(best[v['name']]))
                     else:
-                        x=random.uniform(v['min'],v['max'])
-                        x=round(round(x/v['step'])*v['step'],4)
-                        row.append(x)
-
-                mu,std=gp.predict([row],return_std=True)
-                mu=float(mu[0]); std=float(std[0])
-                ei=(mu-besty)+2.0*std
-
-                dist=min(sqrt(sum((a-b)**2 for a,b in zip(row,e))) for e in existing)
-                score=ei+0.15*dist
-                cand.append((score,ei,mu,std,dist,row))
-
-            cand=sorted(cand,key=lambda z:z[0],reverse=True)
-            selected=[]
-            for c in cand:
-                ok=True
-                for s in selected:
-                    d=sqrt(sum((a-b)**2 for a,b in zip(c[5],s[5])))
-                    if d<2:
-                        ok=False
-                if ok:
-                    selected.append(c)
-                if len(selected)>=nsuggest:
-                    break
-
-            nextid=int(max(edited['ID']))+1
-            for s in selected:
-                rec={'ID':nextid,'Iterazione':current_iter}
-                for i,n in enumerate(names):
-                    rec[n]=s[5][i]
-                rec['Score']=np.nan
-                nextid+=1
-                st.session_state.trials.append(rec)
-            st.rerun()
+                        vals.append(random.uniform(v['min'],v['max']))
+                vals=norm100(vals)
+                mu,std=gp.predict([vals],return_std=True)
+                ei=float(mu[0]-besty+1.5*std[0])
+                cand.append((ei,vals))
+            cand=sorted(cand,key=lambda x:x[0],reverse=True)[:nsuggest]
+            out=[]
+            for i,c in enumerate(cand,1):
+                r={'Prova':i,'EI':round(c[0],2)}
+                for j,n in enumerate(names):
+                    r[n]=round(c[1][j],2)
+                r['Totale']=round(sum(c[1]),2)
+                out.append(r)
+            st.dataframe(pd.DataFrame(out),use_container_width=True)
