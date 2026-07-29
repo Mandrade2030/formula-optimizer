@@ -12,7 +12,7 @@ from sklearn.gaussian_process.kernels import RBF, ConstantKernel, WhiteKernel
 from sklearn.exceptions import ConvergenceWarning
 import warnings
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.2.0"
 SCHEMA_VERSION = "2.0"
 TOL = 0.05
 
@@ -470,6 +470,66 @@ def sync_trials_from_df(df):
     st.session_state.trials = rows
 
 
+def commit_trials_editor_changes():
+    """Commit st.data_editor cell changes immediately during Streamlit's rerun.
+
+    Streamlit reruns the script after a cell edit. Without this callback, the app may
+    rebuild the table from the previous st.session_state.trials and the user can feel
+    forced to type the same score twice. This function reads the widget delta stored
+    in st.session_state['trials_editor'] and applies it to the persistent trials list
+    before the rest of the page is recalculated.
+    """
+    editor_state = st.session_state.get("trials_editor")
+    if not isinstance(editor_state, dict):
+        return
+    edited_rows = editor_state.get("edited_rows", {}) or {}
+    added_rows = editor_state.get("added_rows", []) or []
+    deleted_rows = editor_state.get("deleted_rows", []) or []
+
+    names = variable_names()
+
+    # Apply cell edits by visible row index.
+    for idx, changes in edited_rows.items():
+        try:
+            i = int(idx)
+        except Exception:
+            continue
+        if i < 0 or i >= len(st.session_state.trials):
+            continue
+        row = st.session_state.trials[i]
+        for col, val in changes.items():
+            if col in ["ID", "Iterazione", "Source", "Totale"]:
+                continue
+            if col == "Score":
+                score = to_float(val, np.nan)
+                row[col] = np.nan if np.isnan(score) else float(score)
+            elif col in names:
+                row[col] = round(float(to_float(val, 0.0)), 4)
+        # Recompute total after any component edit.
+        row["Totale"] = round(sum(to_float(row.get(n), 0.0) for n in names), 4)
+
+    # Handle deleted rows if Streamlit enables row deletion.
+    if deleted_rows:
+        deleted = set(int(i) for i in deleted_rows if str(i).isdigit())
+        st.session_state.trials = [r for i, r in enumerate(st.session_state.trials) if i not in deleted]
+
+    # Handle added rows if num_rows='dynamic' is used manually.
+    if added_rows:
+        next_id = next_trial_id()
+        for raw in added_rows:
+            rec = {"ID": next_id, "Iterazione": current_iteration(), "Source": "manual"}
+            vals = []
+            for n in names:
+                val = to_float(raw.get(n), 0.0)
+                rec[n] = round(float(val), 4)
+                vals.append(float(val))
+            rec["Totale"] = round(sum(vals), 4)
+            score = to_float(raw.get("Score"), np.nan)
+            rec["Score"] = np.nan if np.isnan(score) else float(score)
+            st.session_state.trials.append(rec)
+            next_id += 1
+
+
 def make_xlsx():
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -587,9 +647,10 @@ if abs(base_sum - 100) > TOL:
 if not feasible:
     st.error("I vincoli min/max/lock rendono impossibile ottenere una formula con somma 100%. Correggere i limiti prima di generare DOE.")
 
-# Actions
-st.header("2. Azioni DOE")
-act1, act2, act3, act4, act5 = st.columns(5)
+# Actions - generation and project commands
+st.header("2. Azioni principali")
+st.caption("Nota: le nuove prove vanno generate dopo la tabella, in modo che gli score appena inseriti vengano salvati prima del calcolo.")
+act1, act2, act3, act4 = st.columns(4)
 with act1:
     if st.button("Genera DOE iniziale", type="primary", disabled=not feasible):
         st.session_state.trials = []
@@ -598,12 +659,6 @@ with act1:
         st.success(f"Generate {len(candidates)} formulazioni iniziali.")
         st.rerun()
 with act2:
-    if st.button("Genera nuove prove", disabled=not feasible or len(scored_dataframe()) < 3):
-        candidates = optimize_suggestions(int(st.session_state.settings["n_suggest"]))
-        append_trials(candidates, iteration=current_iteration() + 1, source="suggested")
-        st.success(f"Aggiunte {len(candidates)} nuove formulazioni alla tabella principale.")
-        st.rerun()
-with act3:
     if st.button("Ripara totali tabella"):
         names = variable_names()
         repaired_rows = []
@@ -617,33 +672,16 @@ with act3:
             repaired_rows.append(row)
         st.session_state.trials = repaired_rows
         st.rerun()
-with act4:
+with act3:
     if st.button("Svuota prove"):
         st.session_state.trials = []
         st.rerun()
-with act5:
+with act4:
     st.download_button("Salva JSON", data=project_to_json(), file_name=f"{st.session_state.project['name'].replace(' ','_')}_project.json", mime="application/json")
 
-# Dashboard
-st.header("3. Dashboard")
-df_trials = trials_df()
-scored = scored_dataframe()
-metric_cols = st.columns(5)
-metric_cols[0].metric("Formulazioni totali", len(df_trials))
-metric_cols[1].metric("Formulazioni con score", len(scored))
-metric_cols[2].metric("Iterazione corrente", current_iteration())
-if not scored.empty:
-    best = scored.sort_values("Score", ascending=False).iloc[0]
-    metric_cols[3].metric("Miglior score", f"{float(best['Score']):.2f}")
-    metric_cols[4].metric("ID migliore", int(best["ID"]))
-    with st.expander("Migliore formulazione corrente", expanded=True):
-        best_view = best[["ID", "Iterazione"] + variable_names() + ["Totale", "Score"]].to_frame().T
-        st.dataframe(best_view, use_container_width=True)
-else:
-    metric_cols[3].metric("Miglior score", "-")
-    metric_cols[4].metric("ID migliore", "-")
-
 # Main table
+df_trials = trials_df()
+
 st.header("4. Tabella principale unica")
 st.caption("Le nuove prove suggerite vengono aggiunte qui con Score vuoto. Inserisci lo score e genera il ciclo successivo.")
 if df_trials.empty:
@@ -661,15 +699,54 @@ else:
             "Score": st.column_config.NumberColumn("Score", format="%.4f"),
         },
         key="trials_editor",
+        on_change=commit_trials_editor_changes,
     )
+    # Also sync the full returned dataframe for consistency after the callback.
     sync_trials_from_df(edited)
     totals = trials_df()["Totale"].astype(float)
     bad = totals[(totals - 100).abs() > 0.15]
     if len(bad) > 0:
         st.warning(f"Attenzione: {len(bad)} righe hanno totale fuori tolleranza. Usa 'Ripara totali tabella'.")
 
+
+# Suggestion action after table synchronization
+st.header("5. Generazione ciclo successivo")
+st.caption("Gli score vengono salvati subito alla modifica della tabella. Se il browser sta ancora aggiornando, attendi un istante prima di generare nuove prove.")
+scored_now = scored_dataframe()
+col_s1, col_s2 = st.columns([1, 3])
+with col_s1:
+    if st.button("Genera nuove prove", disabled=not feasible or len(scored_now) < 3):
+        candidates = optimize_suggestions(int(st.session_state.settings["n_suggest"]))
+        append_trials(candidates, iteration=current_iteration() + 1, source="suggested")
+        st.success(f"Aggiunte {len(candidates)} nuove formulazioni alla tabella principale.")
+        st.rerun()
+with col_s2:
+    if len(scored_now) < 3:
+        st.info("Inserisci almeno 3 score per generare nuove prove. Con almeno 5 score il modello GP diventa più affidabile.")
+    else:
+        st.write(f"Score disponibili per il prossimo modello: **{len(scored_now)}**")
+
+# Dashboard
+st.header("6. Dashboard")
+df_trials = trials_df()
+scored = scored_dataframe()
+metric_cols = st.columns(5)
+metric_cols[0].metric("Formulazioni totali", len(df_trials))
+metric_cols[1].metric("Formulazioni con score", len(scored))
+metric_cols[2].metric("Iterazione corrente", current_iteration())
+if not scored.empty:
+    best = scored.sort_values("Score", ascending=False).iloc[0]
+    metric_cols[3].metric("Miglior score", f"{float(best['Score']):.2f}")
+    metric_cols[4].metric("ID migliore", int(best["ID"]))
+    with st.expander("Migliore formulazione corrente", expanded=True):
+        best_view = best[["ID", "Iterazione"] + variable_names() + ["Totale", "Score"]].to_frame().T
+        st.dataframe(best_view, use_container_width=True)
+else:
+    metric_cols[3].metric("Miglior score", "-")
+    metric_cols[4].metric("ID migliore", "-")
+
 # Charts and influence
-st.header("5. Analisi")
+st.header("7. Analisi")
 if not scored.empty:
     scored_plot = scored.sort_values("ID").copy()
     scored_plot["BestScore"] = scored_plot["Score"].cummax()
@@ -682,7 +759,7 @@ if not infl.empty:
     st.dataframe(infl, use_container_width=True)
 
 # Export
-st.header("6. Export")
+st.header("8. Export")
 exp1, exp2 = st.columns(2)
 with exp1:
     st.download_button(

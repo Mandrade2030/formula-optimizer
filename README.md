@@ -40,3 +40,17 @@ A,B,C,D,E,F,Score
 ```
 
 Colonne opzionali: `ID`, `Iterazione`.
+
+
+## V2.1 fix
+
+- Spostata la generazione delle nuove prove dopo la tabella principale.
+- Gli score digitati vengono sincronizzati prima di calcolare le nuove proposte.
+- Ridotto il problema per cui era necessario inserire due volte lo stesso score.
+
+
+## V2.2 fix
+
+- Aggiunto callback `commit_trials_editor_changes()` su `st.data_editor`.
+- Gli score vengono applicati allo stato persistente durante il rerun automatico di Streamlit.
+- Riduce/elimina il problema di dover digitare due volte lo stesso score.
