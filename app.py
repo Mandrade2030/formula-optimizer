@@ -12,7 +12,7 @@ from sklearn.gaussian_process.kernels import RBF, ConstantKernel, WhiteKernel
 from sklearn.exceptions import ConvergenceWarning
 import warnings
 
-APP_VERSION = "2.3.1"
+APP_VERSION = "2.4.0"
 SCHEMA_VERSION = "2.0"
 TOL = 0.05
 
