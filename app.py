@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -133,6 +134,7 @@ def trial_df():
 def sync_trials(df):
     ns=names(); rows=[]
     for _,r in df.iterrows():
+        # skip fully blank manual rows
         vals=[to_float(r.get(n),0.0) for n in ns]
         score=to_float(r.get("Score"),np.nan)
         if sum(abs(v) for v in vals)<1e-12 and np.isnan(score):
@@ -280,177 +282,184 @@ def influence():
     mins=np.array([v["min"] for v in specs]); spans=np.array([max(v["max"]-v["min"],v["step"],1e-9) for v in specs])
     Xn=(X-mins)/spans
     try:
-        gp=GaussianProcessRegressor(kernel=ConstantKernel(1.0)*RBF(length_scale=np.ones(len(specs)))+WhiteKernel(1e-5),normalize_y=True,random_state=1)
+        gp=GaussianProcessRegressor(kernel=ConstantKernel(1.0)*RBF(length_scale=np.ones(len(specs)))+WhiteKernel(1e-5), normalize_y=True, random_state=1)
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore", ConvergenceWarning)
-            gp.fit(Xn,y)
+            warnings.simplefilter("ignore", ConvergenceWarning); gp.fit(Xn,y)
         center=np.mean(Xn,axis=0); rows=[]
-        for i,name in enumerate(ns):
-            p1=center.copy(); p2=center.copy()
-            p1[i]=min(1.0,p1[i]+0.05); p2[i]=max(0.0,p2[i]-0.05)
-            delta=abs(float(gp.predict([p1])[0]-gp.predict([p2])[0]))
-            rows.append({"Variabile":name, "Indice influenza":round(delta,4)})
+        for i,n in enumerate(ns):
+            p1=center.copy(); p2=center.copy(); p1[i]=min(1,p1[i]+0.05); p2[i]=max(0,p2[i]-0.05)
+            rows.append({"Variabile":n,"Indice influenza":round(abs(float(gp.predict([p1])[0]-gp.predict([p2])[0])),4)})
         return pd.DataFrame(rows).sort_values("Indice influenza",ascending=False)
     except Exception:
         return pd.DataFrame()
 
-def to_json():
-    data={"schema_version":SCHEMA_VERSION, "project":st.session_state.project, "variables":st.session_state.variables, "trials":st.session_state.trials, "settings":st.session_state.settings}
-    return json.dumps(data,indent=2,ensure_ascii=False)
+def project_json():
+    return json.dumps({"schema_version":SCHEMA_VERSION,"project":st.session_state.project,"variables":st.session_state.variables,"trials":st.session_state.trials,"settings":st.session_state.settings}, indent=2, ensure_ascii=False)
 
-def load_json(f):
-    data=json.load(f)
+def load_project(uploaded):
+    data=json.load(uploaded)
     st.session_state.project=data.get("project",st.session_state.project)
     st.session_state.variables=data.get("variables",st.session_state.variables)
     st.session_state.trials=data.get("trials",[])
     st.session_state.settings={**st.session_state.settings, **data.get("settings",{})}
+    st.session_state.component_count=len(st.session_state.variables)
 
 def make_xlsx():
-    output=BytesIO()
-    with pd.ExcelWriter(output,engine="openpyxl") as w:
+    bio=BytesIO()
+    with pd.ExcelWriter(bio,engine="openpyxl") as w:
         pd.DataFrame([st.session_state.project]).to_excel(w,sheet_name="Project",index=False)
-        trial_df().to_excel(w,sheet_name="Trials",index=False)
         pd.DataFrame(st.session_state.variables).to_excel(w,sheet_name="Variables",index=False)
-    return output.getvalue()
-
-# ==================
-# STREAMLIT UI
-# ==================
-st.title("🧪 Formula Optimizer - Mixture Laboratory V2.6")
-st.markdown("---")
-
-# Sidebar
-with st.sidebar:
-    st.header("⚙️ Impostazioni Globali")
-    st.session_state.project["name"]=st.text_input("Nome Progetto:",st.session_state.project["name"])
-    st.session_state.project["notes"]=st.text_area("Note:",st.session_state.project["notes"],height=80)
-    st.markdown("---")
-    st.header("📥 Importa/Esporta")
-    col1,col2=st.columns(2)
-    with col1:
-        if st.button("📥 Carica JSON"):
-            st.session_state.show_upload=True
-    with col2:
-        st.download_button("📤 Scarica JSON",to_json(),"project.json","application/json")
-    if st.session_state.get("show_upload"):
-        uploaded=st.file_uploader("Scegli file JSON",type="json")
-        if uploaded:
-            load_json(uploaded)
-            st.session_state.show_upload=False
-            st.rerun()
-    st.download_button("📊 Scarica XLSX",make_xlsx(),"project.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    st.markdown("---")
-    st.header("🎛️ Parametri Ottimizzazione")
-    st.session_state.settings["n_initial"]=st.number_input("N iniziale DOE:",1,100,st.session_state.settings["n_initial"])
-    st.session_state.settings["n_suggest"]=st.number_input("N suggerimenti:",1,50,st.session_state.settings["n_suggest"])
-    st.session_state.settings["candidate_pool"]=st.number_input("Pool candidati:",1000,50000,st.session_state.settings["candidate_pool"],step=1000)
-    st.session_state.settings["duplicate_threshold"]=st.slider("Soglia duplicati:",0.001,0.1,st.session_state.settings["duplicate_threshold"],0.001)
-    st.session_state.settings["diversity_threshold"]=st.slider("Soglia diversità:",0.01,0.2,st.session_state.settings["diversity_threshold"],0.01)
-    st.session_state.settings["exploration_weight"]=st.slider("Peso esplorazione:",0.5,3.0,st.session_state.settings["exploration_weight"],0.1)
-    st.session_state.settings["local_radius"]=st.slider("Raggio locale:",0.05,0.5,st.session_state.settings["local_radius"],0.01)
-    st.session_state.settings["include_base"]=st.checkbox("Includi base",st.session_state.settings["include_base"])
-    st.session_state.settings["random_seed"]=st.number_input("Seed random:",0,10000,st.session_state.settings["random_seed"])
-
-# Tab
-tab1,tab2,tab3,tab4=st.tabs(["🔧 Variabili","📋 Tabella Principale","🎯 Suggerimenti","📊 Analisi"])
-
-with tab1:
-    st.subheader("Gestione Variabili/Componenti")
-    st.write(f"Totale componenti: **{len(st.session_state.variables)}**")
-    st.markdown("---")
-    cols=st.columns([1,1,1,1,1,1,1,1,1])
-    var_list=st.session_state.variables
-    for idx,v in enumerate(var_list):
-        with st.expander(f"🔹 {v['name']}"):
-            col1,col2=st.columns(2)
-            with col1:
-                v["base"]=st.number_input(f"Base {v['name']}:",format="%.4f",value=float(v["base"]),key=f"base_{idx}")
-                v["min"]=st.number_input(f"Min {v['name']}:",format="%.4f",value=float(v["min"]),key=f"min_{idx}")
-            with col2:
-                v["max"]=st.number_input(f"Max {v['name']}:",format="%.4f",value=float(v["max"]),key=f"max_{idx}")
-                v["step"]=st.number_input(f"Step {v['name']}:",format="%.6f",value=float(v["step"]),key=f"step_{idx}")
-            v["locked"]=st.checkbox(f"Bloccato",value=v["locked"],key=f"locked_{idx}")
-    if st.button("✅ SALVA IMPOSTAZIONI VARIABILI",key="save_vars"):
-        st.success("Variabili salvate!")
-
-with tab2:
-    st.subheader("Tabella Principale")
-    col1,col2,col3=st.columns([1,1,1])
-    with col1:
-        if st.button("🔄 Genera DOE Iniziale"):
-            n=st.session_state.settings["n_initial"]
-            cands=generate_initial(n)
-            if cands:
-                append_trials(cands,1,"Initial DOE")
-                st.success(f"✅ Aggiunte {len(cands)} prove iniziali")
-            else:
-                st.error("Impossibile generare DOE")
-    with col2:
-        if st.button("📥 Importa Tabella CSV"):
-            st.session_state.show_csv_upload=True
-    with col3:
-        st.download_button("📤 Esporta CSV",trial_df().to_csv(index=False),"trials.csv","text/csv")
-    if st.session_state.get("show_csv_upload"):
-        uploaded=st.file_uploader("Scegli file CSV",type="csv")
-        if uploaded:
-            df=pd.read_csv(uploaded)
-            sync_trials(df)
-            st.session_state.show_csv_upload=False
-            st.success("CSV importato!")
-            st.rerun()
-    st.markdown("---")
-    df=trial_df()
-    edited_df=st.data_editor(df,use_container_width=True,hide_index=False,key="trials_editor")
-    st.markdown("---")
-    if st.button("💾 Salva modifiche tabella",key="save_table"):
-        sync_trials(edited_df)
-        st.success("Tabella salvata!")
-
-with tab3:
-    st.subheader("Generazione Suggerimenti")
-    col1,col2=st.columns([1,1])
-    with col1:
-        if st.button("🎯 Genera Suggerimenti (Ottimizzati)"):
-            n=st.session_state.settings["n_suggest"]
-            cands=optimize(n)
-            if cands:
-                append_trials(cands,current_iter()+1,"Optimized")
-                st.success(f"✅ Aggiunte {len(cands)} prove ottimizzate")
-            else:
-                st.error("Impossibile generare suggerimenti")
-    with col2:
-        if st.button("🎲 Genera Suggerimenti (Locali)"):
-            n=st.session_state.settings["n_suggest"]
-            cands=fallback_suggestions(n)
-            if cands:
-                append_trials(cands,current_iter()+1,"Local")
-                st.success(f"✅ Aggiunte {len(cands)} prove locali")
-            else:
-                st.error("Impossibile generare suggerimenti")
-    st.markdown("---")
-    st.info("💡 Inserisci gli Score nella tabella principale, poi premi 'Salva modifiche tabella' prima di generare nuovi suggerimenti.")
-
-with tab4:
-    st.subheader("Analisi e Visualizzazioni")
-    sdf=scored_df()
-    if not sdf.empty:
-        col1,col2,col3=st.columns(3)
-        with col1:
-            st.metric("Prove con Score",len(sdf))
-        with col2:
-            st.metric("Score Massimo",f"{sdf['Score'].max():.4f}")
-        with col3:
-            st.metric("Score Medio",f"{sdf['Score'].mean():.4f}")
-        st.markdown("---")
-        st.subheader("Influenza Variabili")
+        trial_df().to_excel(w,sheet_name="Trials",index=False)
+        sdf=scored_df()
+        if not sdf.empty: sdf.sort_values("Score",ascending=False).head(1).to_excel(w,sheet_name="Best",index=False)
         inf=influence()
-        if not inf.empty:
-            st.dataframe(inf,use_container_width=True)
-            st.bar_chart(inf.set_index("Variabile")["Indice influenza"])
-        else:
-            st.info("Servono almeno 5 prove con Score per calcolare l'influenza.")
-        st.markdown("---")
-        st.subheader("Andamento Score")
-        st.line_chart(sdf[["ID","Score"]].set_index("ID"))
+        if not inf.empty: inf.to_excel(w,sheet_name="Influence",index=False)
+    return bio.getvalue()
+
+# -------------------------
+# Sidebar
+# -------------------------
+st.sidebar.title("Formula Optimizer V2.6")
+st.sidebar.caption("Mixture Laboratory - somma obbligatoria 100%")
+st.sidebar.subheader("Progetto")
+st.session_state.project["name"]=st.sidebar.text_input("Nome progetto",st.session_state.project.get("name","Nuovo progetto"))
+st.session_state.project["notes"]=st.sidebar.text_area("Note",st.session_state.project.get("notes",""),height=80)
+st.sidebar.subheader("Impostazioni DOE")
+st.session_state.settings["n_initial"]=st.sidebar.number_input("Prove DOE iniziali",3,50,int(st.session_state.settings["n_initial"]),1)
+st.session_state.settings["n_suggest"]=st.sidebar.number_input("Prove suggerite per ciclo",1,20,int(st.session_state.settings["n_suggest"]),1)
+st.session_state.settings["candidate_pool"]=st.sidebar.number_input("Candidate pool",1000,50000,int(st.session_state.settings["candidate_pool"]),1000)
+st.session_state.settings["local_radius"]=st.sidebar.slider("Raggio DOE locale",0.05,0.50,float(st.session_state.settings["local_radius"]),0.01)
+st.session_state.settings["exploration_weight"]=st.sidebar.slider("Peso esplorazione",0.1,5.0,float(st.session_state.settings["exploration_weight"]),0.1)
+st.session_state.settings["include_base"]=st.sidebar.checkbox("Includi formula base nel DOE", bool(st.session_state.settings.get("include_base",True)))
+
+st.sidebar.subheader("Import")
+json_file=st.sidebar.file_uploader("Carica progetto JSON",type=["json"])
+if json_file and st.sidebar.button("Importa JSON"):
+    load_project(json_file); st.sidebar.success("JSON caricato"); st.rerun()
+csv_file=st.sidebar.file_uploader("Importa storico CSV",type=["csv"])
+if csv_file and st.sidebar.button("Importa CSV"):
+    df=pd.read_csv(csv_file); ns=names(); missing=[n for n in ns if n not in df.columns]
+    if missing: st.sidebar.error(f"Mancano colonne: {missing}")
     else:
-        st.info("Nessuna prova con Score disponibile.")
+        rows=[]; sid=next_id()
+        for idx,r in df.iterrows():
+            vals=[float(r[n]) for n in ns]
+            fixed=repair_mixture(vals,st.session_state.variables) or vals
+            rec={"ID":int(r.get("ID",sid+idx)),"Iterazione":int(r.get("Iterazione",0)),"Source":"imported"}
+            for n,v in zip(ns,fixed): rec[n]=round(float(v),4)
+            rec["Totale"]=round(sum(fixed),4); rec["Score"]=to_float(r.get("Score"),np.nan)
+            rows.append(rec)
+        st.session_state.trials.extend(rows); st.sidebar.success(f"Importate {len(rows)} righe"); st.rerun()
+
+# -------------------------
+# Main
+# -------------------------
+st.title("Formula Optimizer - Mixture Laboratory V2.6")
+st.markdown("**Versione stabile con salvataggio esplicito per componenti e tabella prove.**")
+
+st.header("1. Componenti / variabili")
+st.warning("Modifica i valori e premi **SALVA IMPOSTAZIONI VARIABILI**. I valori vengono applicati solo dopo il salvataggio.")
+
+new_count=st.number_input("Numero componenti visibili",1,30,st.session_state.component_count,1)
+if new_count != st.session_state.component_count:
+    cur=list(st.session_state.variables)
+    if new_count>len(cur):
+        for i in range(len(cur),new_count): cur.append({"name":f"RM{i+1}","base":0.0,"min":0.0,"max":100.0,"step":0.1,"locked":False})
+    else:
+        cur=cur[:new_count]
+    st.session_state.variables=cur; st.session_state.component_count=new_count; st.rerun()
+
+with st.form("component_form", clear_on_submit=False):
+    h=st.columns([1.4,1,1,1,1,0.7])
+    for c,label in zip(h,["Nome","Base","Min","Max","Passo","Lock"]): c.markdown(f"**{label}**")
+    edited=[]
+    for i,v in enumerate(st.session_state.variables):
+        c1,c2,c3,c4,c5,c6=st.columns([1.4,1,1,1,1,0.7])
+        name=c1.text_input("Nome",str(v.get("name",f"RM{i+1}")),key=f"nm_{i}",label_visibility="collapsed")
+        base=c2.number_input("Base",value=float(v.get("base",0.0)),step=0.01,format="%.4f",key=f"ba_{i}",label_visibility="collapsed")
+        mn=c3.number_input("Min",value=float(v.get("min",0.0)),step=0.01,format="%.4f",key=f"mi_{i}",label_visibility="collapsed")
+        mx=c4.number_input("Max",value=float(v.get("max",100.0)),step=0.01,format="%.4f",key=f"ma_{i}",label_visibility="collapsed")
+        step=c5.number_input("Passo",value=float(v.get("step",0.1)),min_value=0.0001,step=0.01,format="%.4f",key=f"st_{i}",label_visibility="collapsed")
+        lock=c6.checkbox("Lock",value=bool(v.get("locked",False)),key=f"lo_{i}",label_visibility="collapsed")
+        edited.append({"name":name,"base":base,"min":mn,"max":mx,"step":step,"locked":lock})
+    save_vars=st.form_submit_button("SALVA IMPOSTAZIONI VARIABILI",type="primary",use_container_width=True)
+
+if save_vars:
+    clean=[]; seen=set()
+    for v in edited:
+        name=str(v["name"]).strip()
+        if not name or name.lower() in ["none","nan"]: continue
+        if name in seen: st.error(f"Nome duplicato: {name}"); st.stop()
+        if float(v["max"]) < float(v["min"]): st.error(f"{name}: Max < Min"); st.stop()
+        seen.add(name); clean.append({"name":name,"base":float(v["base"]),"min":float(v["min"]),"max":float(v["max"]),"step":max(float(v["step"]),0.0001),"locked":bool(v["locked"])})
+    if clean:
+        old=set(names()); st.session_state.variables=clean; st.session_state.component_count=len(clean)
+        if st.session_state.trials and old != set(names()): st.warning("Nomi variabili cambiati: le prove esistenti potrebbero non allinearsi.")
+        st.success("Impostazioni variabili salvate."); st.rerun()
+
+base_sum=sum(v["base"] for v in st.session_state.variables)
+feasible,info=specs_feasible(st.session_state.variables)
+c1,c2,c3,c4=st.columns(4)
+c1.metric("Somma Base",f"{base_sum:.2f}%"); c2.metric("Min sum",f"{info['min_sum']:.2f}%"); c3.metric("Max sum",f"{info['max_sum']:.2f}%"); c4.metric("Fattibilità","OK" if feasible else "NO")
+if abs(base_sum-100)>TOL: st.warning("La formula base non somma a 100%. Il DOE riparerà le formule, ma conviene correggere la base.")
+if not feasible: st.error("Vincoli non fattibili: correggere Min/Max/Lock.")
+
+st.header("2. Azioni")
+a1,a2,a3,a4=st.columns(4)
+with a1:
+    if st.button("Genera DOE iniziale",type="primary",disabled=not feasible):
+        st.session_state.trials=[]; cands=generate_initial(int(st.session_state.settings["n_initial"])); append_trials(cands,0,"initial_doe"); st.rerun()
+with a2:
+    if st.button("Ripara totali tabella"):
+        ns=names(); rows=[]
+        for row in st.session_state.trials:
+            vals=[to_float(row.get(n),0.0) for n in ns]; fixed=repair_mixture(vals,st.session_state.variables)
+            if fixed:
+                for n,v in zip(ns,fixed): row[n]=round(v,4)
+                row["Totale"]=round(sum(fixed),4)
+            rows.append(row)
+        st.session_state.trials=rows; st.rerun()
+with a3:
+    if st.button("Svuota prove"):
+        st.session_state.trials=[]; st.rerun()
+with a4:
+    st.download_button("Salva JSON",project_json(),file_name=f"{st.session_state.project['name'].replace(' ','_')}_project.json",mime="application/json")
+
+st.header("3. Tabella principale")
+df=trial_df()
+if df.empty: st.info("Genera DOE o importa uno storico CSV.")
+else:
+    st.info("Modifica score/formule, poi premi **Salva modifiche tabella**.")
+    with st.form("trial_form", clear_on_submit=False):
+        edited_df=st.data_editor(df,use_container_width=True,num_rows="dynamic",column_config={"ID":st.column_config.NumberColumn("ID",disabled=True),"Iterazione":st.column_config.NumberColumn("Iterazione",disabled=True),"Source":st.column_config.TextColumn("Source",disabled=True),"Totale":st.column_config.NumberColumn("Totale",disabled=True,format="%.4f"),"Score":st.column_config.NumberColumn("Score",format="%.4f")},key="trial_editor")
+        save_trials=st.form_submit_button("Salva modifiche tabella",type="primary")
+    if save_trials:
+        sync_trials(edited_df); st.success("Modifiche tabella salvate."); st.rerun()
+
+st.header("4. Generazione ciclo successivo")
+sdf=scored_df()
+g1,g2=st.columns([1,3])
+with g1:
+    if st.button("Genera nuove prove",disabled=not feasible or len(sdf)<3):
+        cands=optimize(int(st.session_state.settings["n_suggest"])); append_trials(cands,current_iter()+1,"suggested"); st.rerun()
+with g2:
+    st.write(f"Score disponibili: **{len(sdf)}**")
+
+st.header("5. Dashboard")
+df=trial_df(); sdf=scored_df()
+m=st.columns(5)
+m[0].metric("Formule totali",len(df)); m[1].metric("Con score",len(sdf)); m[2].metric("Iterazione",current_iter())
+if not sdf.empty:
+    best=sdf.sort_values("Score",ascending=False).iloc[0]
+    m[3].metric("Miglior score",f"{float(best['Score']):.2f}"); m[4].metric("ID migliore",int(best["ID"]))
+    with st.expander("Migliore formulazione",expanded=True): st.dataframe(best[["ID","Iterazione"]+names()+["Totale","Score"]].to_frame().T,use_container_width=True)
+    plot=sdf.sort_values("ID").copy(); plot["BestScore"]=plot["Score"].cummax(); st.line_chart(plot.set_index("ID")[["Score","BestScore"]])
+inf=influence()
+if not inf.empty:
+    st.subheader("Importanza variabili (proxy)"); st.dataframe(inf,use_container_width=True)
+
+st.header("6. Export")
+e1,e2=st.columns(2)
+with e1: st.download_button("Export CSV",trial_df().to_csv(index=False).encode("utf-8"),file_name=f"{st.session_state.project['name'].replace(' ','_')}_trials.csv",mime="text/csv")
+with e2: st.download_button("Export XLSX",make_xlsx(),file_name=f"{st.session_state.project['name'].replace(' ','_')}_project.xlsx",mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+st.caption(f"Formula Optimizer - Mixture Laboratory V2.6 | Versione {APP_VERSION}")
