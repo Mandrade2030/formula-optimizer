@@ -54,3 +54,11 @@ Colonne opzionali: `ID`, `Iterazione`.
 - Aggiunto callback `commit_trials_editor_changes()` su `st.data_editor`.
 - Gli score vengono applicati allo stato persistente durante il rerun automatico di Streamlit.
 - Riduce/elimina il problema di dover digitare due volte lo stesso score.
+
+
+## V2.3 fix
+
+- La tabella principale è stata messa dentro un form Streamlit.
+- Gli score non provocano più un salvataggio parziale durante il rerun automatico.
+- Dopo aver inserito o modificato gli score, premere `Salva modifiche tabella`.
+- Solo dopo il salvataggio generare nuove prove.

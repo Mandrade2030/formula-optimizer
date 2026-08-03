@@ -12,7 +12,7 @@ from sklearn.gaussian_process.kernels import RBF, ConstantKernel, WhiteKernel
 from sklearn.exceptions import ConvergenceWarning
 import warnings
 
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.3.0"
 SCHEMA_VERSION = "2.0"
 TOL = 0.05
 
@@ -470,66 +470,6 @@ def sync_trials_from_df(df):
     st.session_state.trials = rows
 
 
-def commit_trials_editor_changes():
-    """Commit st.data_editor cell changes immediately during Streamlit's rerun.
-
-    Streamlit reruns the script after a cell edit. Without this callback, the app may
-    rebuild the table from the previous st.session_state.trials and the user can feel
-    forced to type the same score twice. This function reads the widget delta stored
-    in st.session_state['trials_editor'] and applies it to the persistent trials list
-    before the rest of the page is recalculated.
-    """
-    editor_state = st.session_state.get("trials_editor")
-    if not isinstance(editor_state, dict):
-        return
-    edited_rows = editor_state.get("edited_rows", {}) or {}
-    added_rows = editor_state.get("added_rows", []) or []
-    deleted_rows = editor_state.get("deleted_rows", []) or []
-
-    names = variable_names()
-
-    # Apply cell edits by visible row index.
-    for idx, changes in edited_rows.items():
-        try:
-            i = int(idx)
-        except Exception:
-            continue
-        if i < 0 or i >= len(st.session_state.trials):
-            continue
-        row = st.session_state.trials[i]
-        for col, val in changes.items():
-            if col in ["ID", "Iterazione", "Source", "Totale"]:
-                continue
-            if col == "Score":
-                score = to_float(val, np.nan)
-                row[col] = np.nan if np.isnan(score) else float(score)
-            elif col in names:
-                row[col] = round(float(to_float(val, 0.0)), 4)
-        # Recompute total after any component edit.
-        row["Totale"] = round(sum(to_float(row.get(n), 0.0) for n in names), 4)
-
-    # Handle deleted rows if Streamlit enables row deletion.
-    if deleted_rows:
-        deleted = set(int(i) for i in deleted_rows if str(i).isdigit())
-        st.session_state.trials = [r for i, r in enumerate(st.session_state.trials) if i not in deleted]
-
-    # Handle added rows if num_rows='dynamic' is used manually.
-    if added_rows:
-        next_id = next_trial_id()
-        for raw in added_rows:
-            rec = {"ID": next_id, "Iterazione": current_iteration(), "Source": "manual"}
-            vals = []
-            for n in names:
-                val = to_float(raw.get(n), 0.0)
-                rec[n] = round(float(val), 4)
-                vals.append(float(val))
-            rec["Totale"] = round(sum(vals), 4)
-            score = to_float(raw.get("Score"), np.nan)
-            rec["Score"] = np.nan if np.isnan(score) else float(score)
-            st.session_state.trials.append(rec)
-            next_id += 1
-
-
 def make_xlsx():
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -687,22 +627,28 @@ st.caption("Le nuove prove suggerite vengono aggiunte qui con Score vuoto. Inser
 if df_trials.empty:
     st.info("Nessuna formulazione presente. Genera il DOE iniziale o importa uno storico CSV.")
 else:
-    edited = st.data_editor(
-        df_trials,
-        use_container_width=True,
-        num_rows="dynamic",
-        column_config={
-            "ID": st.column_config.NumberColumn("ID", disabled=True),
-            "Iterazione": st.column_config.NumberColumn("Iterazione", disabled=True),
-            "Source": st.column_config.TextColumn("Source", disabled=True),
-            "Totale": st.column_config.NumberColumn("Totale", disabled=True, format="%.4f"),
-            "Score": st.column_config.NumberColumn("Score", format="%.4f"),
-        },
-        key="trials_editor",
-        on_change=commit_trials_editor_changes,
-    )
-    # Also sync the full returned dataframe for consistency after the callback.
-    sync_trials_from_df(edited)
+    st.info("Per evitare perdite di dati: inserisci o modifica gli score nella tabella, poi premi 'Salva modifiche tabella'.")
+    with st.form("trials_editor_form", clear_on_submit=False):
+        edited = st.data_editor(
+            df_trials,
+            use_container_width=True,
+            num_rows="dynamic",
+            column_config={
+                "ID": st.column_config.NumberColumn("ID", disabled=True),
+                "Iterazione": st.column_config.NumberColumn("Iterazione", disabled=True),
+                "Source": st.column_config.TextColumn("Source", disabled=True),
+                "Totale": st.column_config.NumberColumn("Totale", disabled=True, format="%.4f"),
+                "Score": st.column_config.NumberColumn("Score", format="%.4f"),
+            },
+            key="trials_editor",
+        )
+        save_table = st.form_submit_button("Salva modifiche tabella", type="primary")
+
+    if save_table:
+        sync_trials_from_df(edited)
+        st.success("Modifiche salvate. Ora puoi generare nuove prove.")
+        st.rerun()
+
     totals = trials_df()["Totale"].astype(float)
     bad = totals[(totals - 100).abs() > 0.15]
     if len(bad) > 0:
@@ -711,7 +657,7 @@ else:
 
 # Suggestion action after table synchronization
 st.header("5. Generazione ciclo successivo")
-st.caption("Gli score vengono salvati subito alla modifica della tabella. Se il browser sta ancora aggiornando, attendi un istante prima di generare nuove prove.")
+st.caption("Gli score vengono salvati solo quando premi Salva modifiche tabella. Questo evita il problema del valore inserito che sparisce al primo aggiornamento.")
 scored_now = scored_dataframe()
 col_s1, col_s2 = st.columns([1, 3])
 with col_s1:
