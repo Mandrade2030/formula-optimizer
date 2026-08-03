@@ -12,7 +12,7 @@ from sklearn.gaussian_process.kernels import RBF, ConstantKernel, WhiteKernel
 from sklearn.exceptions import ConvergenceWarning
 import warnings
 
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.3.1"
 SCHEMA_VERSION = "2.0"
 TOL = 0.05
 
@@ -541,39 +541,41 @@ if csv_file is not None and st.sidebar.button("Importa CSV"):
 st.title("Formula Optimizer - Mixture Laboratory V2")
 st.markdown("**MVP per DOE iterativo su formulazioni a miscela con vincolo nativo: somma = 100%.**")
 
-# Variable editor
-st.header("1. Componenti / variabili")
-var_df = pd.DataFrame(st.session_state.variables)
-var_df = st.data_editor(
-    var_df,
-    use_container_width=True,
-    num_rows="dynamic",
-    column_config={
-        "name": st.column_config.TextColumn("Nome"),
-        "base": st.column_config.NumberColumn("Base", format="%.4f"),
-        "min": st.column_config.NumberColumn("Min", format="%.4f"),
-        "max": st.column_config.NumberColumn("Max", format="%.4f"),
-        "step": st.column_config.NumberColumn("Passo", format="%.4f", min_value=0.0001),
-        "locked": st.column_config.CheckboxColumn("Lock"),
-    },
-    key="variable_editor",
-)
-# sanitize and save variables
-clean_vars = []
-for _, r in var_df.iterrows():
-    name = str(r.get("name", "")).strip()
-    if not name:
-        continue
-    clean_vars.append({
-        "name": name,
-        "base": float(to_float(r.get("base"), 0.0)),
-        "min": float(to_float(r.get("min"), 0.0)),
-        "max": float(to_float(r.get("max"), 100.0)),
-        "step": max(float(to_float(r.get("step"), 0.1)), 0.0001),
-        "locked": bool(r.get("locked", False)),
-    })
-if clean_vars:
-    st.session_state.variables = clean_vars
+# Variable editor - in a container to prevent reflow issues
+with st.container():
+    st.header("1. Componenti / variabili")
+    var_df = pd.DataFrame(st.session_state.variables)
+    var_df = st.data_editor(
+        var_df,
+        use_container_width=True,
+        num_rows="dynamic",
+        column_config={
+            "name": st.column_config.TextColumn("Nome"),
+            "base": st.column_config.NumberColumn("Base", format="%.4f"),
+            "min": st.column_config.NumberColumn("Min", format="%.4f"),
+            "max": st.column_config.NumberColumn("Max", format="%.4f"),
+            "step": st.column_config.NumberColumn("Passo", format="%.4f", min_value=0.0001),
+            "locked": st.column_config.CheckboxColumn("Lock"),
+        },
+        key="variable_editor",
+        disabled=False,
+    )
+    # sanitize and save variables
+    clean_vars = []
+    for _, r in var_df.iterrows():
+        name = str(r.get("name", "")).strip()
+        if not name:
+            continue
+        clean_vars.append({
+            "name": name,
+            "base": float(to_float(r.get("base"), 0.0)),
+            "min": float(to_float(r.get("min"), 0.0)),
+            "max": float(to_float(r.get("max"), 100.0)),
+            "step": max(float(to_float(r.get("step"), 0.1)), 0.0001),
+            "locked": bool(r.get("locked", False)),
+        })
+    if clean_vars:
+        st.session_state.variables = clean_vars
 
 base_sum = sum(v["base"] for v in st.session_state.variables)
 feasible, feas_info = specs_feasible(st.session_state.variables)
@@ -596,7 +598,7 @@ with act1:
         st.session_state.trials = []
         candidates = generate_initial_doe(int(st.session_state.settings["n_initial"]))
         append_trials(candidates, iteration=0, source="initial_doe")
-        st.success(f"Generate {len(candidates)} formulazioni iniziali.")
+        st.success(f"Generato {len(candidates)} formulazioni iniziali.")
         st.rerun()
 with act2:
     if st.button("Ripara totali tabella"):
@@ -622,7 +624,7 @@ with act4:
 # Main table
 df_trials = trials_df()
 
-st.header("4. Tabella principale unica")
+st.header("3. Tabella principale unica")
 st.caption("Le nuove prove suggerite vengono aggiunte qui con Score vuoto. Inserisci lo score e genera il ciclo successivo.")
 if df_trials.empty:
     st.info("Nessuna formulazione presente. Genera il DOE iniziale o importa uno storico CSV.")
@@ -656,7 +658,7 @@ else:
 
 
 # Suggestion action after table synchronization
-st.header("5. Generazione ciclo successivo")
+st.header("4. Generazione ciclo successivo")
 st.caption("Gli score vengono salvati solo quando premi Salva modifiche tabella. Questo evita il problema del valore inserito che sparisce al primo aggiornamento.")
 scored_now = scored_dataframe()
 col_s1, col_s2 = st.columns([1, 3])
@@ -673,7 +675,7 @@ with col_s2:
         st.write(f"Score disponibili per il prossimo modello: **{len(scored_now)}**")
 
 # Dashboard
-st.header("6. Dashboard")
+st.header("5. Dashboard")
 df_trials = trials_df()
 scored = scored_dataframe()
 metric_cols = st.columns(5)
@@ -692,7 +694,7 @@ else:
     metric_cols[4].metric("ID migliore", "-")
 
 # Charts and influence
-st.header("7. Analisi")
+st.header("6. Analisi")
 if not scored.empty:
     scored_plot = scored.sort_values("ID").copy()
     scored_plot["BestScore"] = scored_plot["Score"].cummax()
@@ -705,7 +707,7 @@ if not infl.empty:
     st.dataframe(infl, use_container_width=True)
 
 # Export
-st.header("8. Export")
+st.header("7. Export")
 exp1, exp2 = st.columns(2)
 with exp1:
     st.download_button(
